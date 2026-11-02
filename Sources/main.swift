@@ -499,6 +499,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let about = NSMenuItem(title: "About CoffeeCup", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+
         let logItem = NSMenuItem(title: "Show Log", action: #selector(showLog), keyEquivalent: "")
         logItem.target = self
         menu.addItem(logItem)
@@ -545,6 +549,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.informativeText = "\(error.localizedDescription)\n\nMake sure CoffeeCup.app is in /Applications."
             alert.runModal()
         }
+    }
+
+    @objc private func showAbout() {
+        // Menu bar apps are never frontmost, so bring the panel forward explicitly.
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: NSAttributedString(string: "Keeps your Mac awake, and checks every 20 seconds that it still is.\ngithub.com/adamtmitchell/CoffeeCup")
+        ])
     }
 
     @objc private func showLog() {
