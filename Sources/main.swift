@@ -63,8 +63,6 @@ final class Log {
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = Notifier()
     private let center = UNUserNotificationCenter.current()
-    // One identifier, so each new status replaces the last instead of piling up.
-    private let identifier = "CoffeeCup.status"
 
     var enabled: Bool {
         get { UserDefaults.standard.object(forKey: "showNotifications") as? Bool ?? true }
@@ -94,9 +92,20 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        center.removeDeliveredNotifications(withIdentifiers: [identifier])
-        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
-            if let error { Log.shared.write("Notification error: \(error.localizedDescription)") }
+        // A fresh identifier each time: re-using one turns the post into a silent
+        // in-place update whenever the earlier copy hasn't been removed yet.
+        // Older ones are cleared only after this one is added, so they don't pile up.
+        let id = UUID().uuidString
+        let center = center
+        center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in
+            if let error {
+                Log.shared.write("Notification error: \(error.localizedDescription)")
+                return
+            }
+            center.getDeliveredNotifications { delivered in
+                let old = delivered.map(\.request.identifier).filter { $0 != id }
+                if !old.isEmpty { center.removeDeliveredNotifications(withIdentifiers: old) }
+            }
         }
     }
 
