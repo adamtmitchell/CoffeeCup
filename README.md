@@ -1,3 +1,5 @@
+<img src="Resources/AppIcon.png" width="128" alt="CoffeeCup icon">
+
 # CoffeeCup
 
 A menu bar keep-awake utility for macOS 13+ (built and tested on macOS 27.2), modelled on

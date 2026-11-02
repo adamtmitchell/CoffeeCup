@@ -23,6 +23,7 @@ lipo -create -output "$BIN" build/CoffeeCup-arm64 build/CoffeeCup-x86_64
 rm build/CoffeeCup-arm64 build/CoffeeCup-x86_64
 
 cp Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc signature so Gatekeeper/SMAppService accept the locally built app.
 codesign --force --sign - "$APP"
