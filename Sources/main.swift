@@ -15,6 +15,7 @@
 import AppKit
 import IOKit.pwr_mgt
 import ServiceManagement
+import UserNotifications
 
 // MARK: - Logging
 
@@ -57,6 +58,56 @@ final class Log {
     }
 }
 
+// MARK: - Notifications
+
+final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = Notifier()
+    private let center = UNUserNotificationCenter.current()
+    // One identifier, so each new status replaces the last instead of piling up.
+    private let identifier = "CoffeeCup.status"
+
+    var enabled: Bool {
+        get { UserDefaults.standard.object(forKey: "showNotifications") as? Bool ?? true }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "showNotifications")
+            if newValue { requestAuthorization() }
+        }
+    }
+
+    func setUp() {
+        center.delegate = self
+        if enabled { requestAuthorization() }
+    }
+
+    func requestAuthorization() {
+        center.requestAuthorization(options: [.alert]) { granted, error in
+            if let error {
+                Log.shared.write("Notification authorization error: \(error.localizedDescription)")
+            } else if !granted {
+                Log.shared.write("Notifications not allowed (System Settings → Notifications → CoffeeCup)")
+            }
+        }
+    }
+
+    func post(_ title: String, _ body: String) {
+        guard enabled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+            if let error { Log.shared.write("Notification error: \(error.localizedDescription)") }
+        }
+    }
+
+    // Show banners even when CoffeeCup counts as the active app (e.g. right after a menu click).
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
+    }
+}
+
 // MARK: - Power assertions
 
 final class AwakeEngine {
@@ -77,6 +128,7 @@ final class AwakeEngine {
     }
 
     var onChange: (() -> Void)?
+    var onExpire: (() -> Void)?
 
     private var displayAssertion: IOPMAssertionID = 0
     private var systemAssertion: IOPMAssertionID = 0
@@ -100,8 +152,7 @@ final class AwakeEngine {
         if let duration {
             expiresAt = Date().addingTimeInterval(duration)
             let t = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
-                Log.shared.write("Timer expired")
-                self?.deactivate()
+                self?.expire()
             }
             t.tolerance = 1
             RunLoop.main.add(t, forMode: .common)
@@ -131,6 +182,13 @@ final class AwakeEngine {
         onChange?()
     }
 
+    private func expire() {
+        guard isActive else { return }
+        Log.shared.write("Timer expired")
+        deactivate()
+        onExpire?()
+    }
+
     // Opting out of App Nap keeps our timers firing on schedule; these
     // options also create their own idle-sleep assertions as a backup.
     private func beginProcessActivity() {
@@ -152,7 +210,7 @@ final class AwakeEngine {
     func reassert(reason: String) {
         guard isActive else { return }
         if let expiresAt, expiresAt <= Date() {
-            deactivate()
+            expire()
             return
         }
         rebuildAssertions(reason: reason)
@@ -221,7 +279,7 @@ final class AwakeEngine {
     private func verify() {
         guard isActive else { return }
         if let expiresAt, expiresAt <= Date() {
-            deactivate()
+            expire()
             return
         }
 
@@ -277,6 +335,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         engine.onChange = { [weak self] in self?.refreshIcon() }
+        engine.onExpire = {
+            Notifier.shared.post("CoffeeCup timer ended", "Your Mac can sleep normally again.")
+        }
+        Notifier.shared.setUp()
         observeSystemEvents()
 
         Log.shared.write("Launched, pid \(ProcessInfo.processInfo.processIdentifier), macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
@@ -324,8 +386,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if isRight {
             showMenu()
         } else {
-            engine.isActive ? engine.deactivate() : engine.activate(for: nil)
+            toggle()
         }
+    }
+
+    // Launch-time activation and quitting stay silent; only user actions notify.
+    private func activate(for duration: TimeInterval?, label: String) {
+        engine.activate(for: duration)
+        if let duration {
+            let f = DateFormatter()
+            f.timeStyle = .short
+            let until = f.string(from: Date().addingTimeInterval(duration))
+            Notifier.shared.post("CoffeeCup is on", "Your Mac will stay awake for \(label.lowercased()) (until \(until)).")
+        } else {
+            Notifier.shared.post("CoffeeCup is on", "Your Mac will stay awake until you turn it off.")
+        }
+    }
+
+    private func deactivate() {
+        engine.deactivate()
+        Notifier.shared.post("CoffeeCup is off", "Your Mac can sleep normally again.")
     }
 
     private func showMenu() {
@@ -400,6 +480,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         displaySleep.state = engine.allowDisplaySleep ? .on : .off
         menu.addItem(displaySleep)
 
+        let notify = NSMenuItem(title: "Show Notifications",
+                                action: #selector(toggleNotifications), keyEquivalent: "")
+        notify.target = self
+        notify.state = Notifier.shared.enabled ? .on : .off
+        menu.addItem(notify)
+
         let onLaunch = NSMenuItem(title: "Activate on Launch",
                                   action: #selector(toggleActivateOnLaunch), keyEquivalent: "")
         onLaunch.target = self
@@ -424,11 +510,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggle() {
-        engine.isActive ? engine.deactivate() : engine.activate(for: nil)
+        engine.isActive ? deactivate() : activate(for: nil, label: "Indefinitely")
     }
 
     @objc private func activateDuration(_ sender: NSMenuItem) {
-        engine.activate(for: durations[sender.tag].1)
+        let (label, duration) = durations[sender.tag]
+        activate(for: duration, label: label)
+    }
+
+    @objc private func toggleNotifications() {
+        Notifier.shared.enabled.toggle()
     }
 
     @objc private func toggleDisplaySleep() {
